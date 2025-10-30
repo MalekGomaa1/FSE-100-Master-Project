@@ -1,0 +1,113 @@
+
+
+#!/usr/bin/env python3
+
+import RPi.GPIO as GPIO
+import time
+
+# Define GPIO pins
+TRIG = 23       # GPIO pin for Trig of Ultrasonic Sensor
+ECHO = 18       # GPIO pin for Echo of Ultrasonic Sensor
+VIBRATION_MOTOR = 20  # GPIO pin for Vibration Motor
+
+def setup():
+    """ Setup the GPIO pins for the ultrasonic sensor and vibration motor """
+    GPIO.setmode(GPIO.BCM)
+
+    # Setup for ultrasonic sensor
+    GPIO.setup(TRIG, GPIO.OUT)
+    GPIO.setup(ECHO, GPIO.IN)
+
+    # Setup for vibration motor
+    GPIO.setup(VIBRATION_MOTOR, GPIO.OUT)
+    GPIO.output(VIBRATION_MOTOR, GPIO.LOW)  # Turn off the vibration motor initially
+
+def distance():
+    """ Measure the distance using the ultrasonic sensor """
+    GPIO.output(TRIG, 0)
+    time.sleep(0.000002)
+    GPIO.output(TRIG, 1)
+    time.sleep(0.00001)
+    GPIO.output(TRIG, 0)
+             
+    while GPIO.input(ECHO) == 0:
+        pass
+    time1 = time.time()
+    
+    while GPIO.input(ECHO) == 1:
+        pass
+    time2 = time.time()
+
+    duration = time2 - time1
+    return (duration * 340 / 2) * 100  # Convert to centimeters
+
+def vibrate_for_seconds(seconds=0.5):
+    """ Activate the vibration motor for a specified number of seconds """
+    GPIO.output(VIBRATION_MOTOR, GPIO.HIGH)  # Turn on the vibration motor
+    time.sleep(seconds)  # Keep it on for the specified duration
+    GPIO.output(VIBRATION_MOTOR, GPIO.LOW)  # Turn off the vibration motor
+
+def loop():
+    """ Main loop that checks the distance and controls the vibration motor """
+    while True:
+        dis = distance()
+        print(f"Object detected at: {dis} cm")
+
+        if dis < 20:  # If the distance is less than 20 cm
+            vibrate_for_seconds(0.5)  # Vibrate for 0.5 seconds
+        
+        time.sleep(0.3)
+
+def destroy():
+    """ Cleanup function to reset GPIO settings """
+    GPIO.cleanup()
+
+if __name__ == "__main__":
+    setup()
+    try:
+        loop()
+    except KeyboardInterrupt:
+        destroy()
+
+
+
+import subprocess
+import base64
+import openai
+
+# Set your OpenAI API key
+openai.api_key = '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'
+
+# Define the image filename
+image_path = 'captured_image.jpg'
+
+# Capture the image using fswebcam
+subprocess.run(['fswebcam', '-r', '1280x720', '--no-banner', image_path])
+
+# Encode the image to Base64
+def encode_image(image_path):
+    with open(image_path, 'rb') as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+base64_image = encode_image(image_path)
+
+# Create the payload for the API request
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What is in this image? Is there danger detected? respond only with yes danger detected or no danger detected"},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+        ],
+    }
+]
+
+# Send the request to OpenAI's API
+response = openai.ChatCompletion.create(
+    model="gpt-4o-mini",
+    messages=messages,
+    max_tokens=300,
+)
+
+# Output the result
+print(response.choices[0].message['content'])
