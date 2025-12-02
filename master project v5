@@ -1,0 +1,172 @@
+#importing nesseccary libraries
+import subprocess
+import base64
+import sys
+import time
+#import speech_recognition as sr  # Library for speech recognition
+from openai import OpenAI
+
+#GPIO pin assignments
+import RPi.GPIO as GPIO
+TRIG = 18      # GPIO pin for Trig of Ultrasonic Sensor
+ECHO = 22       # GPIO pin for Echo of Ultrasonic Sensor
+VIBRATION_MOTOR = 20  # GPIO pin for Vibration Motor
+BtnPin = 17
+BtnIsDown = True
+client = OpenAI(api_key="XX")
+
+MODEL = "gpt-5-nano-2025-08-07"      
+IMAGE_PATH = "captured_image.jpg"
+RESOLUTION = "640x480"     
+
+def setup():
+    """ Setup the GPIO pins for the ultrasonic sensor and vibration motor """
+    GPIO.setmode(GPIO.BCM)
+
+    # Setup for ultrasonic sensor
+    GPIO.setup(TRIG, GPIO.OUT)
+    GPIO.setup(ECHO, GPIO.IN)
+    GPIO.setup(BtnPin, GPIO.IN, pull_up_down=GPIO.PUD_UP)	# Set BtnPin's mode is input, and pull up to high level(3.3V)
+    GPIO.add_event_detect(BtnPin, GPIO.FALLING, callback=detect, bouncetime=1000)
+   
+    # Setup for vibration motor
+    GPIO.setup(VIBRATION_MOTOR, GPIO.OUT)
+    GPIO.output(VIBRATION_MOTOR, GPIO.LOW)  # Turn off the vibration motor initially
+
+#code for button input
+def detect(chn):
+        global BtnIsDown
+        if BtnIsDown:
+                findobject(GPIO.input(BtnPin))
+                BtnIsDown = True
+        else:
+                BtnIsDown = False
+
+#code for AI image detection
+def loop():
+        while True:
+                pass        
+
+def capture_image(path: str):
+    # -S 2 skips a couple frames so exposure settles faster
+    subprocess.run(["fswebcam", "-r", RESOLUTION, "-S", "2", "--no-banner", path], check=True)
+
+def to_data_url(path: str) -> str:
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode("utf-8")
+    return f"data:image/jpeg;base64,{b64}"
+
+def extract_text(resp):
+    text = getattr(resp, "output_text", None)
+    if text:
+        return text.strip()
+    try:
+        for item in getattr(resp, "output", []):
+            for part in getattr(item, "content", []):
+                if getattr(part, "type", None) in ("output_text", "text") and getattr(part, "text", None):
+                    return part.text.strip()
+    except Exception:
+        pass
+    try:
+        return resp.model_dump_json(indent=2)
+    except Exception:
+        return str(resp)
+
+#!/usr/bin/env python3
+
+import time
+
+#code for ultrasonic sensor
+def distance():
+    """ Measure the distance using the ultrasonic sensor """
+    GPIO.output(TRIG, 0)
+    time.sleep(0.000002)
+    GPIO.output(TRIG, 1)
+    time.sleep(0.00001)
+    GPIO.output(TRIG, 0)
+    #print("trig sent")         
+    while GPIO.input(ECHO) == 0:
+        pass
+        #print("echo 0")
+    time1 = time.time()
+    
+    while GPIO.input(ECHO) == 1:
+        pass
+        #print("echo 1")
+    time2 = time.time()
+
+    duration = time2 - time1
+    return (duration * 340 / 2) * 100  # Convert to centimeters
+
+
+#code for vibrator output
+def vibrate_for_seconds(seconds=0.5):
+    """ Activate the vibration motor for a specified number of seconds """
+    GPIO.output(VIBRATION_MOTOR, GPIO.HIGH)  # Turn on the vibration motor
+    time.sleep(seconds)  # Keep it on for the specified duration
+    GPIO.output(VIBRATION_MOTOR, GPIO.LOW)  # Turn off the vibration motor
+
+
+def destroy():
+    """ Cleanup function to reset GPIO settings """
+    GPIO.cleanup()
+
+
+#code for text to speech
+def speak(text):
+    text = text.replace(" ", "_")  # Replace spaces with underscores to prevent parsing issues
+    subprocess.run((
+        "espeak \"" + text + "\" 2>/dev/null"
+    ).split(" "))  # Construct the command and split into tokens for subprocess.run
+
+
+#priming for the ai
+def findobject(x):
+    try:
+        capture_image(IMAGE_PATH)
+        data_url = to_data_url(IMAGE_PATH)
+
+        prompt = (
+            "Reply with EXACTLY ONE short sentence (<= 15 words) "
+            "describing the main visible objects. Read text but do not relay what is read. You are describing the surruondings to a blind person and are alerting them if any danger are present. The safety of the blind person is your highest priority. Is there danger detected or any situation that may pose as a danger for the user? respond also with danger detected or no danger detected"
+        )
+
+        resp = client.responses.create(
+            model=MODEL,
+            reasoning={"effort": "low"},     # minimize hidden reasoning for speed
+            max_output_tokens=1024,           # big headroom -> no practical cap
+            input=[{
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {"type": "input_image", "image_url": data_url}
+                ]
+            }],
+        )
+	
+        print(extract_text(resp))
+        print("distance called")
+        dis = distance()
+        print(f"Object detected at: {dis} cm")
+        if "no danger detected" in extract_text(resp):
+            print("safe")
+            speak(extract_text(resp))
+        else:
+            speak(extract_text(resp))
+            if dis < 100:  # If the distance is less than 20 cm
+                vibrate_for_seconds(0.5)  # Vibrate for 0.5 seconds
+                speak("BEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDOBEDO")
+            time.sleep(0.3)
+    except Exception as e:
+        print("ERROR:", repr(e), file=sys.stderr)
+        raise
+
+  #^^above is the code for the "alarm"^^
+
+def main():
+    setup() 
+    loop()
+    
+if __name__ == "__main__":
+    main()
+    
